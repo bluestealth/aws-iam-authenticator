@@ -160,15 +160,15 @@ type getCallerIdentityWrapper struct {
 // Generator provides new tokens for the AWS IAM Authenticator.
 type Generator interface {
 	// Get a token using credentials in the default credentials chain.
-	Get(string) (Token, error)
+	Get(context.Context, string) (Token, error)
 	// GetWithRole creates a token by assuming the provided role, using the credentials in the default chain.
-	GetWithRole(clusterID, roleARN string) (Token, error)
+	GetWithRole(ctx context.Context, clusterID, roleARN string) (Token, error)
 	// GetWithRoleForSession creates a token by assuming the provided role, using the provided session.
-	GetWithRoleForSession(clusterID string, roleARN string, sess aws.Config) (Token, error)
+	GetWithRoleForSession(ctx context.Context, clusterID string, roleARN string, sess aws.Config) (Token, error)
 	// Get a token using the provided options
-	GetWithOptions(options *GetTokenOptions) (Token, error)
+	GetWithOptions(ctx context.Context, options *GetTokenOptions) (Token, error)
 	// GetWithSTS returns a token valid for clusterID using the given STS client.
-	GetWithSTS(clusterID string, client *sts.Client) (Token, error)
+	GetWithSTS(ctx context.Context, clusterID string, client *sts.Client) (Token, error)
 	// FormatJSON returns the client auth formatted json for the ExecCredential auth
 	FormatJSON(Token) string
 }
@@ -188,14 +188,14 @@ func NewGenerator(forwardSessionName bool, cache bool) (Generator, error) {
 
 // Get uses the directly available AWS credentials to return a token valid for
 // clusterID. It follows the default AWS credential handling behavior.
-func (g generator) Get(clusterID string) (Token, error) {
-	return g.GetWithOptions(&GetTokenOptions{ClusterID: clusterID})
+func (g generator) Get(ctx context.Context, clusterID string) (Token, error) {
+	return g.GetWithOptions(ctx, &GetTokenOptions{ClusterID: clusterID})
 }
 
 // GetWithRole assumes the given AWS IAM role and returns a token valid for
 // clusterID. If roleARN is empty, behaves like Get (does not assume a role).
-func (g generator) GetWithRole(clusterID string, roleARN string) (Token, error) {
-	return g.GetWithOptions(&GetTokenOptions{
+func (g generator) GetWithRole(ctx context.Context, clusterID string, roleARN string) (Token, error) {
+	return g.GetWithOptions(ctx, &GetTokenOptions{
 		ClusterID:     clusterID,
 		AssumeRoleARN: roleARN,
 	})
@@ -203,8 +203,8 @@ func (g generator) GetWithRole(clusterID string, roleARN string) (Token, error) 
 
 // GetWithRoleForSession assumes the given AWS IAM role for the given session and behaves
 // like GetWithRole.
-func (g generator) GetWithRoleForSession(clusterID string, roleARN string, sess aws.Config) (Token, error) {
-	return g.GetWithOptions(&GetTokenOptions{
+func (g generator) GetWithRoleForSession(ctx context.Context, clusterID string, roleARN string, sess aws.Config) (Token, error) {
+	return g.GetWithOptions(ctx, &GetTokenOptions{
 		ClusterID:     clusterID,
 		AssumeRoleARN: roleARN,
 		Session:       sess,
@@ -222,7 +222,7 @@ func StdinStderrTokenProvider() (string, error) {
 // GetWithOptions takes a GetTokenOptions struct, builds the STS client, and wraps GetWithSTS.
 // If no session has been passed in options, it will build a new session. If an
 // AssumeRoleARN was passed in then assume the role for the session.
-func (g generator) GetWithOptions(options *GetTokenOptions) (Token, error) {
+func (g generator) GetWithOptions(ctx context.Context, options *GetTokenOptions) (Token, error) {
 	if options.ClusterID == "" {
 		return Token{}, fmt.Errorf("ClusterID is required")
 	}
@@ -230,7 +230,7 @@ func (g generator) GetWithOptions(options *GetTokenOptions) (Token, error) {
 	if options.Session.Credentials == nil {
 		// create a session with the "base" credentials available
 		// (from environment variable, profile files, EC2 metadata, etc)
-		sess, err := config.LoadDefaultConfig(context.TODO(), func(loadOptions *config.LoadOptions) error {
+		sess, err := config.LoadDefaultConfig(ctx, func(loadOptions *config.LoadOptions) error {
 			loadOptions.APIOptions = append(loadOptions.APIOptions, func(stack *middleware.Stack) error {
 				return sdkMiddleware.AddUserAgentKeyValue("aws-iam-authenticator", pkg.Version)(stack)
 			})
@@ -283,7 +283,7 @@ func (g generator) GetWithOptions(options *GetTokenOptions) (Token, error) {
 			// If the current session is already a federated identity, carry through
 			// this session name onto the new session to provide better debugging
 			// capabilities
-			resp, err := stsClient.GetCallerIdentity(context.TODO(), &sts.GetCallerIdentityInput{})
+			resp, err := stsClient.GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})
 			if err != nil {
 				return Token{}, err
 			}
@@ -312,11 +312,11 @@ func (g generator) GetWithOptions(options *GetTokenOptions) (Token, error) {
 		})
 	}
 
-	return g.GetWithSTS(options.ClusterID, stsClient)
+	return g.GetWithSTS(ctx, options.ClusterID, stsClient)
 }
 
 // GetWithSTS returns a token valid for clusterID using the given STS client.
-func (g generator) GetWithSTS(clusterID string, client *sts.Client) (Token, error) {
+func (g generator) GetWithSTS(ctx context.Context, clusterID string, client *sts.Client) (Token, error) {
 	// generate an sts:GetCallerIdentity request and add our custom cluster ID header
 	presigner := sts.NewPresignClient(client, func(options *sts.PresignOptions) {
 		options.ClientOptions = append(options.ClientOptions, func(options *sts.Options) {
@@ -325,7 +325,7 @@ func (g generator) GetWithSTS(clusterID string, client *sts.Client) (Token, erro
 			})
 		})
 	})
-	presignedURLRequest, err := presigner.PresignGetCallerIdentity(context.TODO(), &sts.GetCallerIdentityInput{})
+	presignedURLRequest, err := presigner.PresignGetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})
 	if err != nil {
 		return Token{}, err
 	}
