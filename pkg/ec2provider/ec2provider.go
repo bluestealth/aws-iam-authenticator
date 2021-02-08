@@ -1,21 +1,20 @@
 package ec2provider
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sync"
 	"time"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/credentials"
-	"github.com/aws/aws-sdk-go/aws/credentials/stscreds"
-	"github.com/aws/aws-sdk-go/aws/ec2metadata"
-	"github.com/aws/aws-sdk-go/aws/endpoints"
-	"github.com/aws/aws-sdk-go/aws/request"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/aws/aws-sdk-go/service/ec2/ec2iface"
-	"github.com/aws/aws-sdk-go/service/sts"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	sdkMiddleware "github.com/aws/aws-sdk-go-v2/aws/middleware"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials/stscreds"
+	"github.com/aws/aws-sdk-go-v2/feature/ec2/imds"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	"github.com/aws/aws-sdk-go-v2/service/sts"
+	"github.com/aws/smithy-go/middleware"
 	"github.com/sirupsen/logrus"
 	"sigs.k8s.io/aws-iam-authenticator/pkg"
 	"sigs.k8s.io/aws-iam-authenticator/pkg/httputil"
@@ -53,8 +52,12 @@ type ec2Requests struct {
 	lock sync.RWMutex
 }
 
+type EC2API interface {
+	DescribeInstances(ctx context.Context, params *ec2.DescribeInstancesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error)
+}
+
 type ec2ProviderImpl struct {
-	ec2                ec2iface.EC2API
+	ec2                EC2API
 	privateDNSCache    ec2PrivateDNSCache
 	ec2Requests        ec2Requests
 	instanceIdsChannel chan string
@@ -70,7 +73,7 @@ func New(roleARN string, qps int, burst int) EC2Provider {
 		lock: sync.RWMutex{},
 	}
 	return &ec2ProviderImpl{
-		ec2:                ec2.New(newSession(roleARN, qps, burst)),
+		ec2:                ec2.NewFromConfig(newSession(roleARN, qps, burst)),
 		privateDNSCache:    dnsCache,
 		ec2Requests:        ec2Requests,
 		instanceIdsChannel: make(chan string, maxChannelSize),
@@ -81,20 +84,26 @@ func New(roleARN string, qps int, burst int) EC2Provider {
 // the environment, shared credentials (~/.aws/credentials), or EC2 Instance
 // Role.
 
-func newSession(roleARN string, qps int, burst int) *session.Session {
-	sess := session.Must(session.NewSession())
-	sess.Handlers.Build.PushFrontNamed(request.NamedHandler{
-		Name: "authenticatorUserAgent",
-		Fn: request.MakeAddToUserAgentHandler(
-			"aws-iam-authenticator", pkg.Version),
-	})
-	if aws.StringValue(sess.Config.Region) == "" {
-		ec2metadata := ec2metadata.New(sess)
-		regionFound, err := ec2metadata.Region()
+func newSession(roleARN string, qps int, burst int) aws.Config {
+	sess, err := config.LoadDefaultConfig(context.TODO(), func(loadOptions *config.LoadOptions) error {
+		loadOptions.APIOptions = append(loadOptions.APIOptions, func(stack *middleware.Stack) error {
+			return sdkMiddleware.AddUserAgentKeyValue("aws-iam-authenticator", pkg.Version)(stack)
+		})
+		regionOutput, err := imds.New(imds.Options{}).GetRegion(context.TODO(), &imds.GetRegionInput{})
 		if err != nil {
 			logrus.WithError(err).Fatal("Region not found in shared credentials, environment variable, or instance metadata.")
+		} else {
+			loadOptions.DefaultRegion = regionOutput.Region
 		}
-		sess.Config.Region = aws.String(regionFound)
+		rateLimitedClient, err := httputil.NewRateLimitedClient(qps, burst)
+		if err != nil {
+			logrus.Errorf("Getting error = %s while creating rate limited client ", err)
+		}
+		loadOptions.HTTPClient = rateLimitedClient
+		return nil
+	})
+	if err != nil {
+		panic(err)
 	}
 
 	if roleARN != "" {
@@ -102,19 +111,14 @@ func newSession(roleARN string, qps int, burst int) *session.Session {
 			"roleARN": roleARN,
 		}).Infof("Using assumed role for EC2 API")
 
-		rateLimitedClient, err := httputil.NewRateLimitedClient(qps, burst)
-
 		if err != nil {
 			logrus.Errorf("Getting error = %s while creating rate limited client ", err)
 		}
 
-		ap := &stscreds.AssumeRoleProvider{
-			Client:   sts.New(sess, aws.NewConfig().WithHTTPClient(rateLimitedClient).WithSTSRegionalEndpoint(endpoints.RegionalSTSEndpoint)),
-			RoleARN:  roleARN,
-			Duration: time.Duration(60) * time.Minute,
-		}
-
-		sess.Config.Credentials = credentials.NewCredentials(ap)
+		ap := stscreds.NewAssumeRoleProvider(sts.NewFromConfig(sess), roleARN, func(options *stscreds.AssumeRoleOptions) {
+			options.Duration = time.Duration(60) * time.Minute
+		})
+		sess.Credentials = aws.NewCredentialsCache(ap)
 	}
 	return sess
 }
@@ -184,8 +188,8 @@ func (p *ec2ProviderImpl) GetPrivateDNSName(id string) (string, error) {
 	logrus.Debugf("Missed the requestQueue cache for the InstanceId = %s", id)
 	p.setRequestInFlightForInstanceId(id)
 	requestQueueLength := p.getRequestInFlightSize()
-	//The code verifies if the requestQuqueMap size is greater than max request in flight with rate
-	//limiting then writes to the channel where we are making batch ec2:DescribeInstances API call.
+	// The code verifies if the requestQuqueMap size is greater than max request in flight with rate
+	// limiting then writes to the channel where we are making batch ec2:DescribeInstances API call.
 	if requestQueueLength > maxAllowedInflightRequest {
 		logrus.Debugf("Writing to buffered channel for instance Id %s ", id)
 		p.instanceIdsChannel <- id
@@ -194,8 +198,8 @@ func (p *ec2ProviderImpl) GetPrivateDNSName(id string) (string, error) {
 
 	logrus.Infof("Calling ec2:DescribeInstances for the InstanceId = %s ", id)
 	// Look up instance from EC2 API
-	output, err := p.ec2.DescribeInstances(&ec2.DescribeInstancesInput{
-		InstanceIds: aws.StringSlice([]string{id}),
+	output, err := p.ec2.DescribeInstances(context.TODO(), &ec2.DescribeInstancesInput{
+		InstanceIds: []string{id},
 	})
 	if err != nil {
 		p.unsetRequestInFlightForInstanceId(id)
@@ -203,8 +207,8 @@ func (p *ec2ProviderImpl) GetPrivateDNSName(id string) (string, error) {
 	}
 	for _, reservation := range output.Reservations {
 		for _, instance := range reservation.Instances {
-			if aws.StringValue(instance.InstanceId) == id {
-				privateDNSName = aws.StringValue(instance.PrivateDnsName)
+			if aws.ToString(instance.InstanceId) == id {
+				privateDNSName = aws.ToString(instance.PrivateDnsName)
 				p.setPrivateDNSNameCache(id, privateDNSName)
 				p.unsetRequestInFlightForInstanceId(id)
 			}
@@ -254,8 +258,8 @@ func (p *ec2ProviderImpl) StartEc2DescribeBatchProcessing() {
 func (p *ec2ProviderImpl) getPrivateDnsAndPublishToCache(instanceIdList []string) {
 	// Look up instance from EC2 API
 	logrus.Infof("Making Batch Query to DescribeInstances for %v instances ", len(instanceIdList))
-	output, err := p.ec2.DescribeInstances(&ec2.DescribeInstancesInput{
-		InstanceIds: aws.StringSlice(instanceIdList),
+	output, err := p.ec2.DescribeInstances(context.TODO(), &ec2.DescribeInstancesInput{
+		InstanceIds: instanceIdList,
 	})
 	if err != nil {
 		logrus.Errorf("Batch call failed querying private DNS from EC2 API for nodes [%s] : with error = []%s ", instanceIdList, err.Error())
@@ -268,8 +272,8 @@ func (p *ec2ProviderImpl) getPrivateDnsAndPublishToCache(instanceIdList []string
 		// Adding the result to privateDNSChache as well as removing from the requestQueueMap.
 		for _, reservation := range output.Reservations {
 			for _, instance := range reservation.Instances {
-				id := aws.StringValue(instance.InstanceId)
-				privateDNSName := aws.StringValue(instance.PrivateDnsName)
+				id := aws.ToString(instance.InstanceId)
+				privateDNSName := aws.ToString(instance.PrivateDnsName)
 				p.setPrivateDNSNameCache(id, privateDNSName)
 			}
 		}
