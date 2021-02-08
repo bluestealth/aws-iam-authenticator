@@ -3,7 +3,6 @@ package configmap
 import (
 	"reflect"
 	"testing"
-
 	"time"
 
 	core_v1 "k8s.io/api/core/v1"
@@ -15,8 +14,10 @@ import (
 	"sigs.k8s.io/aws-iam-authenticator/pkg/config"
 )
 
-var testUser = config.UserMapping{Username: "matlan", Groups: []string{"system:master", "dev"}}
-var testRole = config.RoleMapping{Username: "computer", Groups: []string{"system:nodes"}}
+var (
+	testUser = config.UserMapping{Username: "matlan", Groups: []string{"system:master", "dev"}}
+	testRole = config.RoleMapping{Username: "computer", Groups: []string{"system:nodes"}}
+)
 
 func makeStore() MapStore {
 	ms := MapStore{
@@ -200,7 +201,7 @@ func TestLoadConfigMap(t *testing.T) {
 	updateData["mapAccounts"] = updatedAWSAccountsYAML
 	watcher.Modify(&core_v1.ConfigMap{ObjectMeta: meta, Data: updateData})
 
-	//TODO: Sync without using sleep
+	// TODO: Sync without using sleep
 	time.Sleep(10 * time.Millisecond)
 
 	if ms.AWSAccount("345") {
@@ -232,5 +233,4 @@ func TestLoadConfigMap(t *testing.T) {
 	if err != UserNotFound {
 		t.Errorf("Expected updated mapping not to contain user 'arn:iam:matlan', got err: %v", err)
 	}
-
 }

@@ -54,7 +54,6 @@ func (f *sharedInformerFactory) ForResource(resource schema.GroupVersionResource
 	// Group=iamauthenticator.k8s.aws, Version=v1alpha1
 	case v1alpha1.SchemeGroupVersion.WithResource("iamidentitymappings"):
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Iamauthenticator().V1alpha1().IAMIdentityMappings().Informer()}, nil
-
 	}
 
 	return nil, fmt.Errorf("no informer found for %v", resource)

@@ -157,8 +157,8 @@ func makeCredential() aws.Credentials {
 		SecretAccessKey: "SECRET",
 		SessionToken:    "TOKEN",
 		Source:          "stubProvider",
-		Expires: time.Date(2020, 9, 19, 13, 14, 0, 1000000, time.UTC),
-		CanExpire: true,
+		Expires:         time.Date(2020, 9, 19, 13, 14, 0, 1000000, time.UTC),
+		CanExpire:       true,
 	}
 }
 
