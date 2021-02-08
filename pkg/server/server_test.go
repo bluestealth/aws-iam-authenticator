@@ -279,7 +279,6 @@ func testIsLoggableIdentity(t *testing.T) {
 			)
 		}
 	}
-
 }
 
 type testVerifier struct {
@@ -460,7 +459,7 @@ func TestAuthenticateVerifierRoleMapping(t *testing.T) {
 	h := setup(&testVerifier{err: nil, identity: identity})
 	defer cleanup(h.metrics)
 	h.mappers = []mapper.Mapper{file.NewFileMapperWithMaps(map[string]config.RoleMapping{
-		"arn:aws:iam::0123456789012:role/test": config.RoleMapping{
+		"arn:aws:iam::0123456789012:role/test": {
 			RoleARN:  "arn:aws:iam::0123456789012:role/Test",
 			Username: "TestUser",
 			Groups:   []string{"sys:admin", "listers"},
@@ -526,7 +525,7 @@ func TestAuthenticateVerifierUserMapping(t *testing.T) {
 	}})
 	defer cleanup(h.metrics)
 	h.mappers = []mapper.Mapper{file.NewFileMapperWithMaps(nil, map[string]config.UserMapping{
-		"arn:aws:iam::0123456789012:user/test": config.UserMapping{
+		"arn:aws:iam::0123456789012:user/test": {
 			UserARN:  "arn:aws:iam::0123456789012:user/Test",
 			Username: "TestUser",
 			Groups:   []string{"sys:admin", "listers"},
@@ -717,7 +716,7 @@ func TestAuthenticateVerifierNodeMapping(t *testing.T) {
 	defer cleanup(h.metrics)
 	h.ec2Provider = newTestEC2Provider("ip-172-31-27-14", 15, 5)
 	h.mappers = []mapper.Mapper{file.NewFileMapperWithMaps(map[string]config.RoleMapping{
-		"arn:aws:iam::0123456789012:role/testnoderole": config.RoleMapping{
+		"arn:aws:iam::0123456789012:role/testnoderole": {
 			RoleARN:  "arn:aws:iam::0123456789012:role/TestNodeRole",
 			Username: "system:node:{{EC2PrivateDNSName}}",
 			Groups:   []string{"system:nodes", "system:bootstrappers"},
@@ -729,7 +728,6 @@ func TestAuthenticateVerifierNodeMapping(t *testing.T) {
 	}
 	verifyAuthResult(t, resp, tokenReview("system:node:ip-172-31-27-14", "aws-iam-authenticator:0123456789012:TestNodeRole", []string{"system:nodes", "system:bootstrappers"}, ""))
 	validateMetrics(t, validateOpts{success: 1})
-
 }
 
 func TestAuthenticateVerifierNodeMappingCRD(t *testing.T) {
@@ -762,7 +760,6 @@ func TestAuthenticateVerifierNodeMappingCRD(t *testing.T) {
 	}
 	verifyAuthResult(t, resp, tokenReview("system:node:ip-172-31-27-14", "aws-iam-authenticator:0123456789012:TestNodeRole", []string{"system:nodes", "system:bootstrappers"}, ""))
 	validateMetrics(t, validateOpts{success: 1})
-
 }
 
 func TestRenderTemplate(t *testing.T) {
@@ -847,7 +844,6 @@ func TestRenderTemplate(t *testing.T) {
 			if got != c.want {
 				t.Errorf("want: %v, got: %v", c.want, got)
 			}
-
 		})
 	}
 }

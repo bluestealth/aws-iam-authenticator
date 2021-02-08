@@ -4,8 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	awsarn "github.com/aws/aws-sdk-go/aws/arn"
-	"github.com/aws/aws-sdk-go/aws/endpoints"
+	awsarn "github.com/aws/aws-sdk-go-v2/aws/arn"
 )
 
 // Canonicalize validates IAM resources are appropriate for the authenticator
@@ -58,8 +57,9 @@ func Canonicalize(arn string) (string, error) {
 }
 
 func checkPartition(partition string) error {
-	for _, p := range endpoints.DefaultPartitions() {
-		if partition == p.ID() {
+	partitions := []string{"aws", "aws-cn", "aws-us-gov", "aws-iso", "aws-iso-b"}
+	for _, p := range partitions {
+		if partition == p {
 			return nil
 		}
 	}
