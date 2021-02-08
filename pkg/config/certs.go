@@ -63,12 +63,12 @@ func (c *Config) GetOrCreateCertificate() (*tls.Certificate, error) {
 		"certPath": c.certPath(),
 		"keyPath":  c.keyPath(),
 	}).Info("saving new key and certificate")
-	err = dumpPEM(c.certPath(), 0666, "CERTIFICATE", certBytes)
+	err = dumpPEM(c.certPath(), 0o666, "CERTIFICATE", certBytes)
 	if err != nil {
 		return nil, err
 	}
 
-	err = dumpPEM(c.keyPath(), 0600, "RSA PRIVATE KEY", keyBytes)
+	err = dumpPEM(c.keyPath(), 0o600, "RSA PRIVATE KEY", keyBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -79,7 +79,6 @@ func (c *Config) GetOrCreateCertificate() (*tls.Certificate, error) {
 
 // LoadExistingCertificate will load certificates from a local path
 func (c *Config) LoadExistingCertificate() (*tls.Certificate, error) {
-
 	// if either file does not exist, we'll consider that not an error but
 	// return a nil
 	if _, err := os.Stat(c.certPath()); os.IsNotExist(err) {
@@ -110,7 +109,6 @@ func dumpPEM(filename string, mode os.FileMode, blockType string, bytes []byte) 
 }
 
 func (c *Config) selfSignCertificate() ([]byte, []byte, error) {
-
 	// generate a new RSA-2048 keypair
 	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {

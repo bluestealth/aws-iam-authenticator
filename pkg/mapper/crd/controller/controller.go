@@ -176,7 +176,6 @@ func (c *Controller) processNextWorkItem() bool {
 		logrus.Infof("successfully synced %s", key)
 		return nil
 	}(obj)
-
 	if err != nil {
 		utilruntime.HandleError(err)
 		return true

@@ -26,12 +26,14 @@ import (
 	iamauthenticatorv1alpha1 "sigs.k8s.io/aws-iam-authenticator/pkg/mapper/crd/apis/iamauthenticator/v1alpha1"
 )
 
-var scheme = runtime.NewScheme()
-var codecs = serializer.NewCodecFactory(scheme)
-var parameterCodec = runtime.NewParameterCodec(scheme)
-var localSchemeBuilder = runtime.SchemeBuilder{
-	iamauthenticatorv1alpha1.AddToScheme,
-}
+var (
+	scheme             = runtime.NewScheme()
+	codecs             = serializer.NewCodecFactory(scheme)
+	parameterCodec     = runtime.NewParameterCodec(scheme)
+	localSchemeBuilder = runtime.SchemeBuilder{
+		iamauthenticatorv1alpha1.AddToScheme,
+	}
+)
 
 // AddToScheme adds all types of this clientset into the given scheme. This allows composition
 // of clientsets, like in:
