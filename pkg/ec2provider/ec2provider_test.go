@@ -1,14 +1,15 @@
 package ec2provider
 
 import (
+	"context"
 	"strconv"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/aws/aws-sdk-go/service/ec2/ec2iface"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	ec2Types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 )
 
 const (
@@ -16,25 +17,25 @@ const (
 )
 
 type mockEc2Client struct {
-	ec2iface.EC2API
-	Reservations []*ec2.Reservation
+	EC2API
+	Reservations []*ec2Types.Reservation
 }
 
-func (c *mockEc2Client) DescribeInstances(in *ec2.DescribeInstancesInput) (*ec2.DescribeInstancesOutput, error) {
+func (c mockEc2Client) DescribeInstances(ctx context.Context, params *ec2.DescribeInstancesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
 	// simulate the time it takes for aws to return
 	time.Sleep(DescribeDelay * time.Millisecond)
-	var reservations []*ec2.Reservation
+	var reservations []ec2Types.Reservation
 	for _, res := range c.Reservations {
-		var reservation ec2.Reservation
+		var reservation ec2Types.Reservation
 		for _, inst := range res.Instances {
-			for _, id := range in.InstanceIds {
-				if aws.StringValue(id) == aws.StringValue(inst.InstanceId) {
+			for _, id := range params.InstanceIds {
+				if id == aws.ToString(inst.InstanceId) {
 					reservation.Instances = append(reservation.Instances, inst)
 				}
 			}
 		}
 		if len(reservation.Instances) > 0 {
-			reservations = append(reservations, &reservation)
+			reservations = append(reservations, reservation)
 		}
 	}
 	return &ec2.DescribeInstancesOutput{
@@ -44,8 +45,8 @@ func (c *mockEc2Client) DescribeInstances(in *ec2.DescribeInstancesInput) (*ec2.
 
 func newMockedEC2ProviderImpl() *ec2ProviderImpl {
 	dnsCache := ec2PrivateDNSCache{
-		cache:     make(map[string]string),
-		lock: sync.RWMutex{},
+		cache: make(map[string]string),
+		lock:  sync.RWMutex{},
 	}
 	ec2Requests := ec2Requests{
 		set:  make(map[string]bool),
@@ -54,10 +55,9 @@ func newMockedEC2ProviderImpl() *ec2ProviderImpl {
 	return &ec2ProviderImpl{
 		ec2:                &mockEc2Client{},
 		privateDNSCache:    dnsCache,
-		ec2Requests:       ec2Requests,
+		ec2Requests:        ec2Requests,
 		instanceIdsChannel: make(chan string, maxChannelSize),
 	}
-
 }
 
 func TestGetPrivateDNSName(t *testing.T) {
@@ -73,12 +73,12 @@ func TestGetPrivateDNSName(t *testing.T) {
 	}
 }
 
-func prepareSingleInstanceOutput() []*ec2.Reservation {
-	reservations := []*ec2.Reservation{
+func prepareSingleInstanceOutput() []*ec2Types.Reservation {
+	reservations := []*ec2Types.Reservation{
 		{
 			Groups: nil,
-			Instances: []*ec2.Instance{
-				&ec2.Instance{
+			Instances: []ec2Types.Instance{
+				{
 					InstanceId:     aws.String("ec2-1"),
 					PrivateDnsName: aws.String("ec2-dns-1"),
 				},
@@ -121,20 +121,19 @@ func getPrivateDNSName(ec2provider *ec2ProviderImpl, instanceString string, dnsS
 	}
 }
 
-func prepare100InstanceOutput() []*ec2.Reservation {
-
-	var reservations []*ec2.Reservation
+func prepare100InstanceOutput() []*ec2Types.Reservation {
+	var reservations []*ec2Types.Reservation
 
 	for i := 1; i < 101; i++ {
 		instanceString := "ec2-" + strconv.Itoa(i)
 		dnsString := "ec2-dns-" + strconv.Itoa(i)
-		instance := &ec2.Instance{
+		instance := ec2Types.Instance{
 			InstanceId:     aws.String(instanceString),
 			PrivateDnsName: aws.String(dnsString),
 		}
-		var instances []*ec2.Instance
+		var instances []ec2Types.Instance
 		instances = append(instances, instance)
-		res1 := &ec2.Reservation{
+		res1 := &ec2Types.Reservation{
 			Groups:        nil,
 			Instances:     instances,
 			OwnerId:       nil,
@@ -144,5 +143,4 @@ func prepare100InstanceOutput() []*ec2.Reservation {
 		reservations = append(reservations, res1)
 	}
 	return reservations
-
 }

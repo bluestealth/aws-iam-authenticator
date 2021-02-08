@@ -4,21 +4,22 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"github.com/aws/aws-sdk-go/aws/credentials"
 	"os"
 	"testing"
 	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
 )
 
 type stubProvider struct {
-	creds   credentials.Value
+	creds   aws.Credentials
 	expired bool
 	err     error
 }
 
-func (s *stubProvider) Retrieve() (credentials.Value, error) {
+func (s *stubProvider) Retrieve(ctx context.Context) (aws.Credentials, error) {
 	s.expired = false
-	s.creds.ProviderName = "stubProvider"
+	s.creds.Source = "stubProvider"
 	return s.creds, s.err
 }
 
@@ -85,7 +86,7 @@ func (t *testFS) reset() {
 	t.fileinfo = testFileInfo{}
 	t.data = []byte{}
 	t.err = nil
-	t.perm = 0600
+	t.perm = 0o600
 }
 
 type testEnv struct {
@@ -150,16 +151,18 @@ func getMocks() (tf *testFS, te *testEnv, testFlock *testFilelock) {
 	return
 }
 
-func makeCredential() credentials.Value {
-	return credentials.Value{
+func makeCredential() aws.Credentials {
+	return aws.Credentials{
 		AccessKeyID:     "AKID",
 		SecretAccessKey: "SECRET",
 		SessionToken:    "TOKEN",
-		ProviderName:    "stubProvider",
+		Source:          "stubProvider",
+		Expires: time.Date(2020, 9, 19, 13, 14, 0, 1000000, time.UTC),
+		CanExpire: true,
 	}
 }
 
-func validateFileCacheProvider(t *testing.T, p FileCacheProvider, err error, c *credentials.Credentials) {
+func validateFileCacheProvider(t *testing.T, p FileCacheProvider, err error, c aws.CredentialsProvider) {
 	if err != nil {
 		t.Errorf("Unexpected error: %v", err)
 	}
@@ -200,7 +203,7 @@ func TestCacheFilename(t *testing.T) {
 }
 
 func TestNewFileCacheProvider_Missing(t *testing.T) {
-	c := credentials.NewCredentials(&stubProvider{})
+	c := aws.NewCredentialsCache(&stubProvider{})
 
 	tf, _, _ := getMocks()
 
@@ -215,12 +218,12 @@ func TestNewFileCacheProvider_Missing(t *testing.T) {
 }
 
 func TestNewFileCacheProvider_BadPermissions(t *testing.T) {
-	c := credentials.NewCredentials(&stubProvider{})
+	c := aws.NewCredentialsCache(&stubProvider{})
 
 	tf, _, _ := getMocks()
 
 	// bad permissions
-	tf.fileinfo.mode = 0777
+	tf.fileinfo.mode = 0o777
 	_, err := NewFileCacheProvider("CLUSTER", "PROFILE", "ARN", c)
 	if err == nil {
 		t.Errorf("Expected error due to public permissions")
@@ -232,7 +235,7 @@ func TestNewFileCacheProvider_BadPermissions(t *testing.T) {
 }
 
 func TestNewFileCacheProvider_Unlockable(t *testing.T) {
-	c := credentials.NewCredentials(&stubProvider{})
+	c := aws.NewCredentialsCache(&stubProvider{})
 
 	_, _, testFlock := getMocks()
 
@@ -248,7 +251,7 @@ func TestNewFileCacheProvider_Unlockable(t *testing.T) {
 }
 
 func TestNewFileCacheProvider_Unreadable(t *testing.T) {
-	c := credentials.NewCredentials(&stubProvider{})
+	c := aws.NewCredentialsCache(&stubProvider{})
 
 	tf, _, _ := getMocks()
 
@@ -262,7 +265,7 @@ func TestNewFileCacheProvider_Unreadable(t *testing.T) {
 }
 
 func TestNewFileCacheProvider_Unparseable(t *testing.T) {
-	c := credentials.NewCredentials(&stubProvider{})
+	c := aws.NewCredentialsCache(&stubProvider{})
 
 	tf, _, _ := getMocks()
 
@@ -275,7 +278,7 @@ func TestNewFileCacheProvider_Unparseable(t *testing.T) {
 }
 
 func TestNewFileCacheProvider_Empty(t *testing.T) {
-	c := credentials.NewCredentials(&stubProvider{})
+	c := aws.NewCredentialsCache(&stubProvider{})
 
 	_, _, _ = getMocks()
 
@@ -288,7 +291,7 @@ func TestNewFileCacheProvider_Empty(t *testing.T) {
 }
 
 func TestNewFileCacheProvider_ExistingCluster(t *testing.T) {
-	c := credentials.NewCredentials(&stubProvider{})
+	c := aws.NewCredentialsCache(&stubProvider{})
 
 	tf, _, _ := getMocks()
 
@@ -304,9 +307,12 @@ func TestNewFileCacheProvider_ExistingCluster(t *testing.T) {
 }
 
 func TestNewFileCacheProvider_ExistingARN(t *testing.T) {
-	c := credentials.NewCredentials(&stubProvider{})
+	c := aws.NewCredentialsCache(&stubProvider{})
 
 	tf, _, _ := getMocks()
+
+	// generate expiration time in future
+	expiration := time.Now().In(time.UTC).Add(1 * time.Hour).Round(time.Nanosecond)
 
 	// successfully parse cluster with matching arn
 	tf.data = []byte(`clusters:
@@ -317,35 +323,29 @@ func TestNewFileCacheProvider_ExistingARN(t *testing.T) {
           accesskeyid: ABC
           secretaccesskey: DEF
           sessiontoken: GHI
-          providername: JKL
-        expiration: 2018-01-02T03:04:56.789Z
+          source: JKL
+          canexpire: true
+          expires: ` + expiration.Format(time.RFC3339Nano) + `
 `)
 	p, err := NewFileCacheProvider("CLUSTER", "PROFILE", "ARN", c)
 	validateFileCacheProvider(t, p, err, c)
 	if p.cachedCredential.Credential.AccessKeyID != "ABC" || p.cachedCredential.Credential.SecretAccessKey != "DEF" ||
-		p.cachedCredential.Credential.SessionToken != "GHI" || p.cachedCredential.Credential.ProviderName != "JKL" {
+		p.cachedCredential.Credential.SessionToken != "GHI" || p.cachedCredential.Credential.Source != "JKL" {
 		t.Errorf("cached credential not extracted correctly")
 	}
-	// fiddle with clock
-	p.cachedCredential.currentTime = func() time.Time {
-		return time.Date(2017, 12, 25, 12, 23, 45, 678, time.UTC)
-	}
+
 	if p.cachedCredential.IsExpired() {
 		t.Errorf("Cached credential should not be expired")
 	}
-	if p.IsExpired() {
-		t.Errorf("Cache credential should not be expired")
-	}
-	expectedExpiration := time.Date(2018, 01, 02, 03, 04, 56, 789000000, time.UTC)
-	if p.ExpiresAt() != expectedExpiration {
+	if p.cachedCredential.Credential.Expires != expiration {
 		t.Errorf("Credential expiration time is not correct, expected %v, got %v",
-			expectedExpiration, p.ExpiresAt())
+			expiration, p.cachedCredential.Credential.Expires)
 	}
 }
 
 func TestFileCacheProvider_Retrieve_NoExpirer(t *testing.T) {
 	providerCredential := makeCredential()
-	c := credentials.NewCredentials(&stubProvider{
+	c := aws.NewCredentialsCache(&stubProvider{
 		creds: providerCredential,
 	})
 
@@ -356,7 +356,7 @@ func TestFileCacheProvider_Retrieve_NoExpirer(t *testing.T) {
 	p, err := NewFileCacheProvider("CLUSTER", "PROFILE", "ARN", c)
 	validateFileCacheProvider(t, p, err, c)
 
-	credential, err := p.Retrieve()
+	credential, err := p.Retrieve(context.Background())
 	if err != nil {
 		t.Errorf("Unexpected error: %v", err)
 	}
@@ -366,10 +366,10 @@ func TestFileCacheProvider_Retrieve_NoExpirer(t *testing.T) {
 	}
 }
 
-func makeExpirerCredentials() (providerCredential credentials.Value, expiration time.Time, c *credentials.Credentials) {
+func makeExpirerCredentials() (providerCredential aws.Credentials, expiration time.Time, c aws.CredentialsProvider) {
 	providerCredential = makeCredential()
 	expiration = time.Date(2020, 9, 19, 13, 14, 0, 1000000, time.UTC)
-	c = credentials.NewCredentials(&stubProviderExpirer{
+	c = aws.NewCredentialsCache(&stubProviderExpirer{
 		stubProvider{
 			creds: providerCredential,
 		},
@@ -392,7 +392,7 @@ func TestFileCacheProvider_Retrieve_WithExpirer_Unlockable(t *testing.T) {
 	// fail to get write lock
 	testFlock.success = false
 	testFlock.err = errors.New("lock stuck, needs wd-40")
-	credential, err := p.Retrieve()
+	credential, err := p.Retrieve(context.Background())
 	if err != nil {
 		t.Errorf("Unexpected error: %v", err)
 	}
@@ -415,7 +415,7 @@ func TestFileCacheProvider_Retrieve_WithExpirer_Unwritable(t *testing.T) {
 	// retrieve credential, which will fetch from underlying Provider
 	// fail to write cache
 	tf.err = errors.New("can't write cache")
-	credential, err := p.Retrieve()
+	credential, err := p.Retrieve(context.Background())
 	if err != nil {
 		t.Errorf("Unexpected error: %v", err)
 	}
@@ -427,9 +427,9 @@ func TestFileCacheProvider_Retrieve_WithExpirer_Unwritable(t *testing.T) {
 		t.Errorf("Wrote to wrong file, expected %v, got %v",
 			CacheFilename(), tf.filename)
 	}
-	if tf.perm != 0600 {
+	if tf.perm != 0o600 {
 		t.Errorf("Wrote with wrong permissions, expected %o, got %o",
-			0600, tf.perm)
+			0o600, tf.perm)
 	}
 	expectedData := []byte(`clusters:
   CLUSTER:
@@ -439,8 +439,9 @@ func TestFileCacheProvider_Retrieve_WithExpirer_Unwritable(t *testing.T) {
           accesskeyid: AKID
           secretaccesskey: SECRET
           sessiontoken: TOKEN
-          providername: stubProvider
-        expiration: ` + expiration.Format(time.RFC3339Nano) + `
+          source: stubProvider
+          canexpire: true
+          expires: ` + expiration.Format(time.RFC3339Nano) + `
 `)
 	if bytes.Compare(tf.data, expectedData) != 0 {
 		t.Errorf("Wrong data written to cache, expected: %s, got %s",
@@ -462,7 +463,7 @@ func TestFileCacheProvider_Retrieve_WithExpirer_Writable(t *testing.T) {
 	// retrieve credential, which will fetch from underlying Provider
 	// same as TestFileCacheProvider_Retrieve_WithExpirer_Unwritable,
 	// but write to disk (code coverage)
-	credential, err := p.Retrieve()
+	credential, err := p.Retrieve(context.Background())
 	if err != nil {
 		t.Errorf("Unexpected error: %v", err)
 	}
@@ -473,9 +474,12 @@ func TestFileCacheProvider_Retrieve_WithExpirer_Writable(t *testing.T) {
 }
 
 func TestFileCacheProvider_Retrieve_CacheHit(t *testing.T) {
-	c := credentials.NewCredentials(&stubProvider{})
+	c := aws.NewCredentialsCache(&stubProvider{})
 
 	tf, _, _ := getMocks()
+
+	// generate expiration time in future
+	expiration := time.Now().In(time.UTC).Add(1 * time.Hour).Round(time.Nanosecond)
 
 	// successfully parse cluster with matching arn
 	tf.data = []byte(`clusters:
@@ -486,23 +490,19 @@ func TestFileCacheProvider_Retrieve_CacheHit(t *testing.T) {
           accesskeyid: ABC
           secretaccesskey: DEF
           sessiontoken: GHI
-          providername: JKL
-        expiration: 2018-01-02T03:04:56.789Z
+          source: JKL
+          canexpire: true
+          expires: ` + expiration.Format(time.RFC3339Nano) + `
 `)
 	p, err := NewFileCacheProvider("CLUSTER", "PROFILE", "ARN", c)
 	validateFileCacheProvider(t, p, err, c)
 
-	// fiddle with clock
-	p.cachedCredential.currentTime = func() time.Time {
-		return time.Date(2017, 12, 25, 12, 23, 45, 678, time.UTC)
-	}
-
-	credential, err := p.Retrieve()
+	credential, err := p.Retrieve(context.Background())
 	if err != nil {
 		t.Errorf("Unexpected error: %v", err)
 	}
 	if credential.AccessKeyID != "ABC" || credential.SecretAccessKey != "DEF" ||
-		credential.SessionToken != "GHI" || credential.ProviderName != "JKL" {
+		credential.SessionToken != "GHI" || credential.Source != "JKL" {
 		t.Errorf("cached credential not returned")
 	}
 }

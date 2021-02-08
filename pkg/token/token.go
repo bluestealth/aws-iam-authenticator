@@ -17,6 +17,7 @@ limitations under the License.
 package token
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -28,19 +29,21 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/credentials"
-	"github.com/aws/aws-sdk-go/aws/credentials/stscreds"
-	"github.com/aws/aws-sdk-go/aws/endpoints"
-	"github.com/aws/aws-sdk-go/aws/request"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/sts"
-	"github.com/aws/aws-sdk-go/service/sts/stsiface"
+	"sigs.k8s.io/aws-iam-authenticator/pkg"
+	"sigs.k8s.io/aws-iam-authenticator/pkg/arn"
+	"sigs.k8s.io/aws-iam-authenticator/pkg/partitions"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	sdkMiddleware "github.com/aws/aws-sdk-go-v2/aws/middleware"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials/endpointcreds"
+	"github.com/aws/aws-sdk-go-v2/credentials/stscreds"
+	"github.com/aws/aws-sdk-go-v2/service/sts"
+	"github.com/aws/smithy-go/middleware"
+	smithyhttp "github.com/aws/smithy-go/transport/http"
 	"github.com/sirupsen/logrus"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	clientauthv1alpha1 "k8s.io/client-go/pkg/apis/clientauthentication/v1alpha1"
-	"sigs.k8s.io/aws-iam-authenticator/pkg"
-	"sigs.k8s.io/aws-iam-authenticator/pkg/arn"
 )
 
 // Identity is returned on successful Verify() results. It contains a parsed
@@ -76,11 +79,6 @@ type Identity struct {
 }
 
 const (
-	// The sts GetCallerIdentity request is valid for 15 minutes regardless of this parameters value after it has been
-	// signed, but we set this unused parameter to 60 for legacy reasons (we check for a value between 0 and 60 on the
-	// server side in 0.3.0 or earlier).  IT IS IGNORED.  If we can get STS to support x-amz-expires, then we should
-	// set this parameter to the actual expiration, and make it configurable.
-	requestPresignParam = 60
 	// The actual token expiration (presigned STS urls are valid for 15 minutes after timestamp in x-amz-date).
 	presignedURLExpiration = 15 * time.Minute
 	v1Prefix               = "k8s-aws-v1."
@@ -104,7 +102,7 @@ type GetTokenOptions struct {
 	AssumeRoleARN        string
 	AssumeRoleExternalID string
 	SessionName          string
-	Session              *session.Session
+	Session              aws.Config
 }
 
 // FormatError is returned when there is a problem with token that is
@@ -166,11 +164,11 @@ type Generator interface {
 	// GetWithRole creates a token by assuming the provided role, using the credentials in the default chain.
 	GetWithRole(clusterID, roleARN string) (Token, error)
 	// GetWithRoleForSession creates a token by assuming the provided role, using the provided session.
-	GetWithRoleForSession(clusterID string, roleARN string, sess *session.Session) (Token, error)
+	GetWithRoleForSession(clusterID string, roleARN string, sess aws.Config) (Token, error)
 	// Get a token using the provided options
 	GetWithOptions(options *GetTokenOptions) (Token, error)
 	// GetWithSTS returns a token valid for clusterID using the given STS client.
-	GetWithSTS(clusterID string, stsAPI stsiface.STSAPI) (Token, error)
+	GetWithSTS(clusterID string, client *sts.Client) (Token, error)
 	// FormatJSON returns the client auth formatted json for the ExecCredential auth
 	FormatJSON(Token) string
 }
@@ -205,7 +203,7 @@ func (g generator) GetWithRole(clusterID string, roleARN string) (Token, error) 
 
 // GetWithRoleForSession assumes the given AWS IAM role for the given session and behaves
 // like GetWithRole.
-func (g generator) GetWithRoleForSession(clusterID string, roleARN string, sess *session.Session) (Token, error) {
+func (g generator) GetWithRoleForSession(clusterID string, roleARN string, sess aws.Config) (Token, error) {
 	return g.GetWithOptions(&GetTokenOptions{
 		ClusterID:     clusterID,
 		AssumeRoleARN: roleARN,
@@ -229,23 +227,30 @@ func (g generator) GetWithOptions(options *GetTokenOptions) (Token, error) {
 		return Token{}, fmt.Errorf("ClusterID is required")
 	}
 
-	if options.Session == nil {
+	if options.Session.Credentials == nil {
 		// create a session with the "base" credentials available
 		// (from environment variable, profile files, EC2 metadata, etc)
-		sess, err := session.NewSessionWithOptions(session.Options{
-			AssumeRoleTokenProvider: StdinStderrTokenProvider,
-			SharedConfigState:       session.SharedConfigEnable,
+		sess, err := config.LoadDefaultConfig(context.TODO(), func(loadOptions *config.LoadOptions) error {
+			loadOptions.APIOptions = append(loadOptions.APIOptions, func(stack *middleware.Stack) error {
+				return sdkMiddleware.AddUserAgentKeyValue("aws-iam-authenticator", pkg.Version)(stack)
+			})
+			if options.Region != "" {
+				loadOptions.Region = options.Region
+				loadOptions.EndpointCredentialOptions = func(endpointOptions *endpointcreds.Options) {
+					if endpoint, err := sts.NewDefaultEndpointResolver().ResolveEndpoint(options.Region, sts.EndpointResolverOptions{}); err != nil {
+						logrus.WithError(err).Errorf("failed to resolve endpoint")
+					} else {
+						endpointOptions.Endpoint = endpoint.URL
+					}
+				}
+			}
+			loadOptions.AssumeRoleCredentialOptions = func(assumeRoleOptions *stscreds.AssumeRoleOptions) {
+				assumeRoleOptions.TokenProvider = StdinStderrTokenProvider
+			}
+			return nil
 		})
 		if err != nil {
 			return Token{}, fmt.Errorf("could not create session: %v", err)
-		}
-		sess.Handlers.Build.PushFrontNamed(request.NamedHandler{
-			Name: "authenticatorUserAgent",
-			Fn: request.MakeAddToUserAgentHandler(
-				"aws-iam-authenticator", pkg.Version),
-		})
-		if options.Region != "" {
-			sess = sess.Copy(aws.NewConfig().WithRegion(options.Region).WithSTSRegionalEndpoint(endpoints.RegionalSTSEndpoint))
 		}
 
 		if g.cache {
@@ -254,13 +259,13 @@ func (g generator) GetWithOptions(options *GetTokenOptions) (Token, error) {
 			if v := os.Getenv("AWS_PROFILE"); len(v) > 0 {
 				profile = v
 			} else {
-				profile = session.DefaultSharedConfigProfile
+				profile = config.DefaultSharedConfigProfile
 			}
-			// create a cacheing Provider wrapper around the Credentials
-			if cacheProvider, err := NewFileCacheProvider(options.ClusterID, profile, options.AssumeRoleARN, sess.Config.Credentials); err == nil {
-				sess.Config.Credentials = credentials.NewCredentials(&cacheProvider)
+			// create a caching Provider wrapper around the Credentials
+			if cacheProvider, err := NewFileCacheProvider(options.ClusterID, profile, options.AssumeRoleARN, sess.Credentials); err == nil {
+				sess.Credentials = aws.NewCredentialsCache(&cacheProvider)
 			} else {
-				_, _ = fmt.Fprintf(os.Stderr, "unable to use cache: %v\n", err)
+				logrus.WithError(err).Errorf("unable to use cache")
 			}
 		}
 
@@ -268,63 +273,59 @@ func (g generator) GetWithOptions(options *GetTokenOptions) (Token, error) {
 	}
 
 	// use an STS client based on the direct credentials
-	stsAPI := sts.New(options.Session)
+	stsClient := sts.NewFromConfig(options.Session)
 
 	// if a roleARN was specified, replace the STS client with one that uses
 	// temporary credentials from that role.
 	if options.AssumeRoleARN != "" {
-		var sessionSetters []func(*stscreds.AssumeRoleProvider)
-
-		if options.AssumeRoleExternalID != "" {
-			sessionSetters = append(sessionSetters, func(provider *stscreds.AssumeRoleProvider) {
-				provider.ExternalID = &options.AssumeRoleExternalID
-			})
-		}
-
+		var sessionName string
 		if g.forwardSessionName {
 			// If the current session is already a federated identity, carry through
 			// this session name onto the new session to provide better debugging
 			// capabilities
-			resp, err := stsAPI.GetCallerIdentity(&sts.GetCallerIdentityInput{})
+			resp, err := stsClient.GetCallerIdentity(context.TODO(), &sts.GetCallerIdentityInput{})
 			if err != nil {
 				return Token{}, err
 			}
 
 			userIDParts := strings.Split(*resp.UserId, ":")
 			if len(userIDParts) == 2 {
-				sessionSetters = append(sessionSetters, func(provider *stscreds.AssumeRoleProvider) {
-					provider.RoleSessionName = userIDParts[1]
-				})
+				sessionName = userIDParts[1]
 			}
 		} else if options.SessionName != "" {
-			sessionSetters = append(sessionSetters, func(provider *stscreds.AssumeRoleProvider) {
-				provider.RoleSessionName = options.SessionName
-			})
+			sessionName = options.SessionName
 		}
 
 		// create STS-based credentials that will assume the given role
-		creds := stscreds.NewCredentials(options.Session, options.AssumeRoleARN, sessionSetters...)
+		creds := stscreds.NewAssumeRoleProvider(stsClient, options.AssumeRoleARN, func(assumeRoleOptions *stscreds.AssumeRoleOptions) {
+			if options.AssumeRoleExternalID != "" {
+				assumeRoleOptions.ExternalID = aws.String(options.AssumeRoleExternalID)
+			}
+			if sessionName != "" {
+				assumeRoleOptions.RoleSessionName = sessionName
+			}
+		})
 
 		// create an STS API interface that uses the assumed role's temporary credentials
-		stsAPI = sts.New(options.Session, &aws.Config{Credentials: creds})
+		stsClient = sts.NewFromConfig(options.Session, func(options *sts.Options) {
+			options.Credentials = creds
+		})
 	}
 
-	return g.GetWithSTS(options.ClusterID, stsAPI)
+	return g.GetWithSTS(options.ClusterID, stsClient)
 }
 
 // GetWithSTS returns a token valid for clusterID using the given STS client.
-func (g generator) GetWithSTS(clusterID string, stsAPI stsiface.STSAPI) (Token, error) {
+func (g generator) GetWithSTS(clusterID string, client *sts.Client) (Token, error) {
 	// generate an sts:GetCallerIdentity request and add our custom cluster ID header
-	request, _ := stsAPI.GetCallerIdentityRequest(&sts.GetCallerIdentityInput{})
-	request.HTTPRequest.Header.Add(clusterIDHeader, clusterID)
-
-	// Sign the request.  The expires parameter (sets the x-amz-expires header) is
-	// currently ignored by STS, and the token expires 15 minutes after the x-amz-date
-	// timestamp regardless.  We set it to 60 seconds for backwards compatibility (the
-	// parameter is a required argument to Presign(), and authenticators 0.3.0 and older are expecting a value between
-	// 0 and 60 on the server side).
-	// https://github.com/aws/aws-sdk-go/issues/2167
-	presignedURLString, err := request.Presign(requestPresignParam)
+	presigner := sts.NewPresignClient(client, func(options *sts.PresignOptions) {
+		options.ClientOptions = append(options.ClientOptions, func(options *sts.Options) {
+			options.APIOptions = append(options.APIOptions, func(stack *middleware.Stack) error {
+				return smithyhttp.AddHeaderValue(clusterIDHeader, clusterID)(stack)
+			})
+		})
+	})
+	presignedURLRequest, err := presigner.PresignGetCallerIdentity(context.TODO(), &sts.GetCallerIdentityInput{})
 	if err != nil {
 		return Token{}, err
 	}
@@ -332,7 +333,7 @@ func (g generator) GetWithSTS(clusterID string, stsAPI stsiface.STSAPI) (Token, 
 	// Set token expiration to 1 minute before the presigned URL expires for some cushion
 	tokenExpiration := time.Now().Local().Add(presignedURLExpiration - 1*time.Minute)
 	// TODO: this may need to be a constant-time base64 encoding
-	return Token{v1Prefix + base64.RawURLEncoding.EncodeToString([]byte(presignedURLString)), tokenExpiration}, nil
+	return Token{v1Prefix + base64.RawURLEncoding.EncodeToString([]byte(presignedURLRequest.URL)), tokenExpiration}, nil
 }
 
 // FormatJSON formats the json to support ExecCredential authentication
@@ -366,35 +367,27 @@ type tokenVerifier struct {
 func stsHostsForPartition(partitionID string) map[string]bool {
 	validSTShostnames := map[string]bool{}
 
-	var partition *endpoints.Partition
-	for _, p := range endpoints.DefaultPartitions() {
-		if partitionID == p.ID() {
-			partition = &p
-			break
-		}
-	}
-	if partition == nil {
-		logrus.Errorf("Partition %s not valid", partitionID)
-		return validSTShostnames
-	}
-	stsSvc, ok := partition.Services()["sts"]
-	if !ok {
+	resolver := sts.NewDefaultEndpointResolver()
+	regions := partitions.GetRegions(partitionID)
+	if len(regions) == 0 {
 		logrus.Errorf("STS service not found in partition %s", partitionID)
 		return validSTShostnames
 	}
-	for epName, ep := range stsSvc.Endpoints() {
-		rep, err := ep.ResolveEndpoint(endpoints.STSRegionalEndpointOption)
+	for _, region := range regions {
+		endpoint, err := resolver.ResolveEndpoint(region, sts.EndpointResolverOptions{})
 		if err != nil {
-			logrus.WithError(err).Errorf("Error resolving endpoint for %s in partition %s", epName, partitionID)
+			logrus.WithError(err).Errorf("Error resolving endpoint for sts in partition %s", partitionID)
 			continue
 		}
-		parsedURL, err := url.Parse(rep.URL)
+
+		parsedURL, err := url.Parse(endpoint.URL)
 		if err != nil {
-			logrus.WithError(err).Errorf("Error parsing STS URL %s", rep.URL)
+			logrus.WithError(err).Errorf("Error parsing STS URL %s", endpoint.URL)
 			continue
 		}
 		validSTShostnames[parsedURL.Hostname()] = true
 	}
+
 	return validSTShostnames
 }
 

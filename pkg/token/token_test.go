@@ -82,8 +82,7 @@ type roundTripper struct {
 	resp *http.Response
 }
 
-type errorReadCloser struct {
-}
+type errorReadCloser struct{}
 
 func (r errorReadCloser) Read(b []byte) (int, error) {
 	return 0, errors.New("An Error")

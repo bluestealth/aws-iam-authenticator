@@ -21,9 +21,9 @@ import (
 	"fmt"
 	"os"
 
+	"sigs.k8s.io/aws-iam-authenticator/pkg/partitions"
 	"sigs.k8s.io/aws-iam-authenticator/pkg/token"
 
-	"github.com/aws/aws-sdk-go/aws/endpoints"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
@@ -75,14 +75,8 @@ func init() {
 	viper.BindPFlag("token", verifyCmd.Flags().Lookup("token"))
 	viper.BindPFlag("output", verifyCmd.Flags().Lookup("output"))
 
-	partitionKeys := []string{}
-	for _, p := range endpoints.DefaultPartitions() {
-		partitionKeys = append(partitionKeys, p.ID())
-	}
-
 	verifyCmd.Flags().String("partition",
-		endpoints.AwsPartitionID,
-		fmt.Sprintf("The AWS partition. Must be one of: %v", partitionKeys))
+		partitions.GetDefaultPartitionId(),
+		fmt.Sprintf("The AWS partition. Must be one of: %v", partitions.GetDefaultPartitionsNames()))
 	viper.BindPFlag("partition", verifyCmd.Flags().Lookup("partition"))
-
 }

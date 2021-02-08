@@ -34,7 +34,7 @@ import (
 	"sigs.k8s.io/aws-iam-authenticator/pkg/mapper/file"
 	"sigs.k8s.io/aws-iam-authenticator/pkg/token"
 
-	awsarn "github.com/aws/aws-sdk-go/aws/arn"
+	awsarn "github.com/aws/aws-sdk-go-v2/aws/arn"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/sirupsen/logrus"
@@ -162,6 +162,7 @@ type healthzHandler struct{}
 func (m *healthzHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "ok")
 }
+
 func (c *Server) getHandler(mappers []mapper.Mapper, ec2DescribeQps int, ec2DescribeBurst int) *handler {
 	if c.ServerEC2DescribeInstancesRoleARN != "" {
 		_, err := awsarn.Parse(c.ServerEC2DescribeInstancesRoleARN)
