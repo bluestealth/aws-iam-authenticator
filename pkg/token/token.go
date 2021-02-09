@@ -39,7 +39,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials/endpointcreds"
 	"github.com/aws/aws-sdk-go-v2/credentials/stscreds"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
-	"github.com/aws/smithy-go/middleware"
+	smithymiddleware "github.com/aws/smithy-go/middleware"
 	smithyhttp "github.com/aws/smithy-go/transport/http"
 	"github.com/sirupsen/logrus"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -141,6 +141,7 @@ var parameterWhitelist = map[string]bool{
 	"x-amz-security-token": true,
 	"x-amz-signature":      true,
 	"x-amz-signedheaders":  true,
+	"x-amz-user-agent":     true,
 }
 
 // this is the result type from the GetCallerIdentity endpoint
@@ -231,9 +232,7 @@ func (g generator) GetWithOptions(ctx context.Context, options *GetTokenOptions)
 		// create a session with the "base" credentials available
 		// (from environment variable, profile files, EC2 metadata, etc)
 		sess, err := config.LoadDefaultConfig(ctx, func(loadOptions *config.LoadOptions) error {
-			loadOptions.APIOptions = append(loadOptions.APIOptions, func(stack *middleware.Stack) error {
-				return sdkMiddleware.AddUserAgentKeyValue("aws-iam-authenticator", pkg.Version)(stack)
-			})
+			loadOptions.APIOptions = append(loadOptions.APIOptions, sdkMiddleware.AddUserAgentKeyValue("aws-iam-authenticator", pkg.Version))
 			if options.Region != "" {
 				loadOptions.Region = options.Region
 				loadOptions.EndpointCredentialOptions = func(endpointOptions *endpointcreds.Options) {
@@ -318,14 +317,20 @@ func (g generator) GetWithOptions(ctx context.Context, options *GetTokenOptions)
 // GetWithSTS returns a token valid for clusterID using the given STS client.
 func (g generator) GetWithSTS(ctx context.Context, clusterID string, client *sts.Client) (Token, error) {
 	// generate an sts:GetCallerIdentity request and add our custom cluster ID header
-	presigner := sts.NewPresignClient(client, func(options *sts.PresignOptions) {
-		options.ClientOptions = append(options.ClientOptions, func(options *sts.Options) {
-			options.APIOptions = append(options.APIOptions, func(stack *middleware.Stack) error {
-				return smithyhttp.AddHeaderValue(clusterIDHeader, clusterID)(stack)
+	presigner := sts.NewPresignClient(client)
+	presignedURLRequest, err := presigner.PresignGetCallerIdentity(ctx, &sts.GetCallerIdentityInput{}, func(presignOptions *sts.PresignOptions) {
+		presignOptions.ClientOptions = append(presignOptions.ClientOptions, func(stsOptions *sts.Options) {
+			// Add clusterId Header
+			stsOptions.APIOptions = append(stsOptions.APIOptions, smithyhttp.SetHeaderValue(clusterIDHeader, clusterID))
+			// Add back useless X-Amz-Expires query param
+			stsOptions.APIOptions = append(stsOptions.APIOptions, smithyhttp.SetHeaderValue("X-Amz-Expires", "60"))
+			// Remove not previously whitelisted X-Amz-User-Agent
+			stsOptions.APIOptions = append(stsOptions.APIOptions, func(stack *smithymiddleware.Stack) error {
+				_, err := stack.Build.Remove("UserAgent")
+				return err
 			})
 		})
 	})
-	presignedURLRequest, err := presigner.PresignGetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})
 	if err != nil {
 		return Token{}, err
 	}
