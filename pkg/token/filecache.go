@@ -118,6 +118,43 @@ type cachedCredential struct {
 	Credential *aws.Credentials
 }
 
+// UnmarshalYAML supports reading up from old credential format
+func (c *cachedCredential) UnmarshalYAML(unmarshal func(interface{}) error) (err error) {
+	var entry struct {
+		Credential *aws.Credentials
+	}
+	if err = unmarshal(&entry); err != nil {
+		return
+	}
+	var result cachedCredential
+	result.Credential = entry.Credential
+	*c = result
+
+	if c.Credential != nil && c.Credential.Source == "" {
+		var aux struct {
+			Credential map[string]string
+			Expiration *time.Time
+		}
+
+		if err = unmarshal(&aux); err != nil {
+			return
+		}
+
+		if aux.Expiration != nil {
+			c.Credential.Expires = *aux.Expiration
+			c.Credential.CanExpire = true
+		}
+
+		if value, ok := aux.Credential["providername"]; ok {
+			c.Credential.Source = value
+		} else {
+			c.Credential.Source = "UNKNOWN"
+		}
+	}
+
+	return
+}
+
 // IsExpired determines if the cached credential has expired
 func (c *cachedCredential) IsExpired() bool {
 	return c.Credential == nil || c.Credential.Expired()
