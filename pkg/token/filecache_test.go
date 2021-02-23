@@ -306,6 +306,42 @@ func TestNewFileCacheProvider_ExistingCluster(t *testing.T) {
 	}
 }
 
+func TestNewOldFileCacheProvider_ExistingARN(t *testing.T) {
+	c := aws.NewCredentialsCache(&stubProvider{})
+
+	tf, _, _ := getMocks()
+
+	// generate expiration time in future
+	expiration := time.Now().In(time.UTC).Add(1 * time.Hour).Round(time.Nanosecond)
+
+	// successfully parse cluster with matching arn
+	tf.data = []byte(`clusters:
+  CLUSTER:
+    PROFILE:
+      ARN:
+        credential:
+          accesskeyid: ABC
+          secretaccesskey: DEF
+          sessiontoken: GHI
+          providername: JKL
+        expiration: ` + expiration.Format(time.RFC3339Nano) + `
+`)
+	p, err := NewFileCacheProvider("CLUSTER", "PROFILE", "ARN", c)
+	validateFileCacheProvider(t, p, err, c)
+	if p.cachedCredential.Credential.AccessKeyID != "ABC" || p.cachedCredential.Credential.SecretAccessKey != "DEF" ||
+		p.cachedCredential.Credential.SessionToken != "GHI" || p.cachedCredential.Credential.Source != "JKL" {
+		t.Errorf("cached credential not extracted correctly")
+	}
+
+	if p.cachedCredential.IsExpired() {
+		t.Errorf("Cached credential should not be expired")
+	}
+	if p.cachedCredential.Credential.Expires != expiration {
+		t.Errorf("Credential expiration time is not correct, expected %v, got %v",
+			expiration, p.cachedCredential.Credential.Expires)
+	}
+}
+
 func TestNewFileCacheProvider_ExistingARN(t *testing.T) {
 	c := aws.NewCredentialsCache(&stubProvider{})
 
