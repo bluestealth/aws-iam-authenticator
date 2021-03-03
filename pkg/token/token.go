@@ -245,15 +245,6 @@ func (g generator) GetWithOptions(ctx context.Context, options *GetTokenOptions)
 			}
 			loadOptions.AssumeRoleCredentialOptions = func(assumeRoleOptions *stscreds.AssumeRoleOptions) {
 				assumeRoleOptions.TokenProvider = StdinStderrTokenProvider
-				if options.AssumeRoleExternalID != "" {
-					assumeRoleOptions.ExternalID = aws.String(options.AssumeRoleExternalID)
-				}
-				if options.SessionName != "" {
-					assumeRoleOptions.RoleSessionName = options.SessionName
-				}
-				if options.AssumeRoleARN != "" {
-					assumeRoleOptions.RoleARN = options.AssumeRoleARN
-				}
 			}
 			return nil
 		})
@@ -286,8 +277,6 @@ func (g generator) GetWithOptions(ctx context.Context, options *GetTokenOptions)
 	// if a roleARN was specified, replace the STS client with one that uses
 	// temporary credentials from that role.
 	if options.AssumeRoleARN != "" {
-		var sessionSetters []func(*stscreds.AssumeRoleProvider)
-
 		var sessionName string
 		if g.forwardSessionName {
 			// If the current session is already a federated identity, carry through
@@ -300,14 +289,10 @@ func (g generator) GetWithOptions(ctx context.Context, options *GetTokenOptions)
 
 			userIDParts := strings.Split(*resp.UserId, ":")
 			if len(userIDParts) == 2 {
-				sessionSetters = append(sessionSetters, func(provider *stscreds.AssumeRoleProvider) {
-					sessionName = userIDParts[1]
-				})
+				sessionName = userIDParts[1]
 			}
 		} else if options.SessionName != "" {
-			sessionSetters = append(sessionSetters, func(provider *stscreds.AssumeRoleProvider) {
-				sessionName = options.SessionName
-			})
+			sessionName = options.SessionName
 		}
 
 		// create STS-based credentials that will assume the given role
