@@ -39,7 +39,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials/endpointcreds"
 	"github.com/aws/aws-sdk-go-v2/credentials/stscreds"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
-	"github.com/aws/smithy-go/middleware"
+	smithymiddleware "github.com/aws/smithy-go/middleware"
 	smithyhttp "github.com/aws/smithy-go/transport/http"
 	"github.com/sirupsen/logrus"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -237,7 +237,7 @@ func (g generator) GetWithOptions(ctx context.Context, options *GetTokenOptions)
 				loadOptions.Region = options.Region
 				loadOptions.EndpointCredentialOptions = func(endpointOptions *endpointcreds.Options) {
 					if endpoint, err := sts.NewDefaultEndpointResolver().ResolveEndpoint(options.Region, sts.EndpointResolverOptions{}); err != nil {
-						logrus.WithError(err)
+						logrus.WithError(err).Errorf("failed to resolve endpoint")
 					} else {
 						endpointOptions.Endpoint = endpoint.URL
 					}
@@ -273,7 +273,7 @@ func (g generator) GetWithOptions(ctx context.Context, options *GetTokenOptions)
 			if cacheProvider, err := NewFileCacheProvider(options.ClusterID, profile, options.AssumeRoleARN, sess.Credentials); err == nil {
 				sess.Credentials = aws.NewCredentialsCache(&cacheProvider)
 			} else {
-				_, _ = fmt.Fprintf(os.Stderr, "unable to use cache: %v\n", err)
+				logrus.WithError(err).Errorf("unable to use cache")
 			}
 		}
 
@@ -340,7 +340,7 @@ func (g generator) GetWithSTS(ctx context.Context, clusterID string, client *sts
 			// Add back useless X-Amz-Expires query param
 			stsOptions.APIOptions = append(stsOptions.APIOptions, smithyhttp.SetHeaderValue("X-Amz-Expires", "60"))
 			// Remove not previously whitelisted X-Amz-User-Agent
-			stsOptions.APIOptions = append(stsOptions.APIOptions, func(stack *middleware.Stack) error {
+			stsOptions.APIOptions = append(stsOptions.APIOptions, func(stack *smithymiddleware.Stack) error {
 				_, err := stack.Build.Remove("UserAgent")
 				return err
 			})
@@ -396,7 +396,7 @@ func stsHostsForPartition(partitionID string) map[string]bool {
 	for _, region := range regions {
 		endpoint, err := resolver.ResolveEndpoint(region, sts.EndpointResolverOptions{})
 		if err != nil {
-			logrus.WithError(err).Errorf("Error resolving endpoint for %s in partition %s", "sts", partitionID)
+			logrus.WithError(err).Errorf("Error resolving endpoint for sts in partition %s", partitionID)
 			continue
 		}
 
