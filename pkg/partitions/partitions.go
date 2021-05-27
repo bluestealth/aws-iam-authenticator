@@ -25,8 +25,9 @@ var partitions = map[string]interface{}{
 		"regions": []string{
 			"aws-global",
 			"af-south-1",
-			"ap-east-1", "ap-northeast-1", "ap-northeast-2", "ap-south-1", "ap-southeast-1", "ap-southeast-2",
+			"ap-east-1", "ap-northeast-1", "ap-northeast-2", "ap-northeast-3", "ap-south-1", "ap-southeast-1", "ap-southeast-2",
 			"ca-central-1",
+			"ca-central-1-fips",
 			"eu-central-1", "eu-north-1", "eu-south-1", "eu-west-1", "eu-west-2", "eu-west-3",
 			"me-south-1",
 			"sa-east-1",
@@ -38,6 +39,7 @@ var partitions = map[string]interface{}{
 		"id":   "aws-cn",
 		"name": "AWS China",
 		"regions": []string{
+			"aws-cn-global",
 			"cn-north-1", "cn-northwest-1",
 		},
 	},
@@ -45,6 +47,7 @@ var partitions = map[string]interface{}{
 		"id":   "aws-us-gov",
 		"name": "AWS GovCloud (US)",
 		"regions": []string{
+			"aws-us-gov-global",
 			"us-gov-east-1", "us-gov-west-1",
 			"us-gov-east-1-fips", "us-gov-west-1-fips",
 		},
@@ -53,6 +56,7 @@ var partitions = map[string]interface{}{
 		"id":   "aws-iso",
 		"name": "AWS ISO (US)",
 		"regions": []string{
+			"aws-iso-global",
 			"us-iso-east-1",
 		},
 	},
@@ -60,6 +64,7 @@ var partitions = map[string]interface{}{
 		"id":   "aws-iso-b",
 		"name": "AWS ISOB (US)",
 		"regions": []string{
+			"aws-iso-b-global",
 			"us-isob-east-1",
 		},
 	},
